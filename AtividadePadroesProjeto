@@ -1,0 +1,153 @@
+using System;
+using System.Collections.Generic;
+
+namespace NotificationSystem
+{
+    public sealed class AppConfig
+    {
+        private static readonly Lazy<AppConfig> _instance =
+            new(() => new AppConfig());
+
+        public static AppConfig Instance => _instance.Value;
+
+        private AppConfig()
+        {
+            AppName = "NotifyHub";
+            SmtpServer = "smtp.notifyhub.com";
+            SmsGateway = "sms.notifyhub.com";
+            PushEndpoint = "push.notifyhub.com";
+            MaxRetryAttempts = 3;
+        }
+
+        public string AppName { get; set; }
+        public string SmtpServer { get; set; }
+        public string SmsGateway { get; set; }
+        public string PushEndpoint { get; set; }
+        public int MaxRetryAttempts { get; set; }
+
+        public override string ToString() =>
+            $"[AppConfig] App={AppName} | SMTP={SmtpServer} | " +
+            $"SMS={SmsGateway} | Push={PushEndpoint} | MaxRetry={MaxRetryAttempts}";
+    }
+
+    public interface INotification
+    {
+        string Channel { get; }
+        bool Send(string recipient, string message);
+    }
+
+    public class EmailNotification : INotification
+    {
+        private readonly AppConfig _config = AppConfig.Instance;
+
+        public string Channel => "Email";
+
+        public bool Send(string recipient, string message)
+        {
+            Console.WriteLine(
+                $"[{Channel}] Enviando via {_config.SmtpServer} " +
+                $"→ Para: {recipient} | Msg: {message}");
+            return true;
+        }
+    }
+
+    public class SmsNotification : INotification
+    {
+        private readonly AppConfig _config = AppConfig.Instance;
+
+        public string Channel => "SMS";
+
+        public bool Send(string recipient, string message)
+        {
+            Console.WriteLine(
+                $"[{Channel}] Enviando via {_config.SmsGateway} " +
+                $"→ Para: {recipient} | Msg: {message}");
+            return true;
+        }
+    }
+
+    public class PushNotification : INotification
+    {
+        private readonly AppConfig _config = AppConfig.Instance;
+
+        public string Channel => "Push";
+
+        public bool Send(string recipient, string message)
+        {
+            Console.WriteLine(
+                $"[{Channel}] Enviando via {_config.PushEndpoint} " +
+                $"→ Token: {recipient} | Msg: {message}");
+            return true;
+        }
+    }
+
+    public enum NotificationChannel
+    {
+        Email,
+        Sms,
+        Push
+    }
+
+    public class NotificationFactory
+    {
+        private readonly Dictionary<NotificationChannel, Func<INotification>> _creators;
+
+        public NotificationFactory()
+        {
+            _creators = new Dictionary<NotificationChannel, Func<INotification>>
+            {
+                { NotificationChannel.Email, () => new EmailNotification() },
+                { NotificationChannel.Sms,   () => new SmsNotification()   },
+                { NotificationChannel.Push,  () => new PushNotification()  }
+            };
+        }
+
+        public INotification Create(NotificationChannel channel)
+        {
+            if (_creators.TryGetValue(channel, out var creator))
+                return creator();
+
+            throw new NotSupportedException(
+                $"Canal '{channel}' não suportado. Registre-o na Factory.");
+        }
+
+        public void Register(NotificationChannel channel, Func<INotification> creator)
+        {
+            _creators[channel] = creator
+                ?? throw new ArgumentNullException(nameof(creator));
+        }
+    }
+
+    public class NotificationService
+    {
+        private readonly NotificationFactory _factory;
+        private readonly AppConfig _config;
+
+        public NotificationService(NotificationFactory factory)
+        {
+            _factory = factory ?? throw new ArgumentNullException(nameof(factory));
+            _config = AppConfig.Instance;
+        }
+
+        public bool Notify(NotificationChannel channel, string recipient, string message)
+        {
+            var notification = _factory.Create(channel);
+            int attempt = 0;
+
+            while (attempt < _config.MaxRetryAttempts)
+            {
+                attempt++;
+                Console.WriteLine($"  → Tentativa {attempt}/{_config.MaxRetryAttempts}");
+
+                if (notification.Send(recipient, message))
+                {
+                    Console.WriteLine($"  ✓ Enviado com sucesso na tentativa {attempt}.\n");
+                    return true;
+                }
+            }
+
+            Console.WriteLine($"  ✗ Falha após {_config.MaxRetryAttempts} tentativas.\n");
+            return false;
+        }
+    }
+}
