@@ -1,0 +1,217 @@
+using System;
+using System.Collections.Generic;
+
+namespace NotificationSystem
+{
+    public sealed class AppConfig
+    {
+        private static readonly Lazy<AppConfig> _instance =
+            new(() => new AppConfig());
+
+        public static AppConfig Instance => _instance.Value;
+
+        private AppConfig()
+        {
+            AppName = "NotifyHub";
+            SmtpServer = "smtp.notifyhub.com";
+            SmsGateway = "sms.notifyhub.com";
+            PushEndpoint = "push.notifyhub.com";
+            MaxRetryAttempts = 3;
+        }
+
+        public string AppName { get; set; }
+        public string SmtpServer { get; set; }
+        public string SmsGateway { get; set; }
+        public string PushEndpoint { get; set; }
+        public int MaxRetryAttempts { get; set; }
+    }
+
+    public interface INotification
+    {
+        string Channel { get; }
+        bool Send(string recipient, string message);
+    }
+
+    public class EmailNotification : INotification
+    {
+        private readonly AppConfig _config = AppConfig.Instance;
+
+        public string Channel => "Email";
+
+        public bool Send(string recipient, string message)
+        {
+            Console.WriteLine(
+                $"[{Channel}] Enviando via {_config.SmtpServer} → {recipient}: {message}");
+            return true;
+        }
+    }
+
+    public class SmsNotification : INotification
+    {
+        private readonly AppConfig _config = AppConfig.Instance;
+
+        public string Channel => "SMS";
+
+        public bool Send(string recipient, string message)
+        {
+            Console.WriteLine(
+                $"[{Channel}] Enviando via {_config.SmsGateway} → {recipient}: {message}");
+            return true;
+        }
+    }
+
+    public class PushNotification : INotification
+    {
+        private readonly AppConfig _config = AppConfig.Instance;
+
+        public string Channel => "Push";
+
+        public bool Send(string recipient, string message)
+        {
+            Console.WriteLine(
+                $"[{Channel}] Enviando via {_config.PushEndpoint} → {recipient}: {message}");
+            return true;
+        }
+    }
+
+    public class ExternalSmsApi
+    {
+        public bool SendSms(string phoneNumber, string text)
+        {
+            Console.WriteLine($"[External API] SMS enviado para {phoneNumber}: {text}");
+            return true;
+        }
+    }
+
+    public class SmsAdapter : INotification
+    {
+        private readonly ExternalSmsApi _externalApi = new ExternalSmsApi();
+
+        public string Channel => "SMS (Adapter)";
+
+        public bool Send(string recipient, string message)
+        {
+            return _externalApi.SendSms(recipient, message);
+        }
+    }
+
+    public class NotificationProxy : INotification
+    {
+        private readonly INotification _realNotification;
+        private int _attempts = 0;
+        private readonly int _maxAttempts = 2;
+
+        public NotificationProxy(INotification realNotification)
+        {
+            _realNotification = realNotification;
+        }
+
+        public string Channel => _realNotification.Channel + " (Proxy)";
+
+        public bool Send(string recipient, string message)
+        {
+            if (_attempts >= _maxAttempts)
+            {
+                Console.WriteLine("[Proxy] Limite de tentativas excedido.");
+                return false;
+            }
+
+            Console.WriteLine("[Proxy] Verificando permissões...");
+            Console.WriteLine("[Proxy] Registrando log...");
+
+            _attempts++;
+
+            return _realNotification.Send(recipient, message);
+        }
+    }
+
+    public enum NotificationChannel
+    {
+        Email,
+        Sms,
+        Push
+    }
+
+    public class NotificationFactory
+    {
+        private readonly Dictionary<NotificationChannel, Func<INotification>> _creators;
+
+        public NotificationFactory()
+        {
+            _creators = new Dictionary<NotificationChannel, Func<INotification>>
+            {
+                { NotificationChannel.Email, () => new EmailNotification() },
+                { NotificationChannel.Sms,   () => new SmsNotification() },
+                { NotificationChannel.Push,  () => new PushNotification() }
+            };
+        }
+
+        public INotification Create(NotificationChannel channel)
+        {
+            if (_creators.TryGetValue(channel, out var creator))
+                return creator();
+
+            throw new NotSupportedException($"Canal '{channel}' não suportado.");
+        }
+
+        public void Register(NotificationChannel channel, Func<INotification> creator)
+        {
+            _creators[channel] = creator;
+        }
+    }
+
+    public class NotificationService
+    {
+        private readonly NotificationFactory _factory;
+        private readonly AppConfig _config;
+
+        public NotificationService(NotificationFactory factory)
+        {
+            _factory = factory;
+            _config = AppConfig.Instance;
+        }
+
+        public bool Notify(NotificationChannel channel, string recipient, string message)
+        {
+            var notification = _factory.Create(channel);
+            int attempt = 0;
+
+            while (attempt < _config.MaxRetryAttempts)
+            {
+                attempt++;
+                Console.WriteLine($"→ Tentativa {attempt}");
+
+                if (notification.Send(recipient, message))
+                {
+                    Console.WriteLine("✓ Enviado com sucesso\n");
+                    return true;
+                }
+            }
+
+            Console.WriteLine("✗ Falha no envio\n");
+            return false;
+        }
+    }
+
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            var factory = new NotificationFactory();
+
+            factory.Register(NotificationChannel.Sms, () => new SmsAdapter());
+
+            factory.Register(NotificationChannel.Email,
+                () => new NotificationProxy(new EmailNotification()));
+
+            factory.Register(NotificationChannel.Push,
+                () => new NotificationProxy(new PushNotification()));
+
+            var service = new NotificationService(factory);
+
+            service.Notify(NotificationChannel.Email, "ana@email.com", "Olá Email!");
+            service.Notify(NotificationChannel.Sms, "11999999999", "Olá SMS!");
+            service.Notify(NotificationChannel.Push, "token123", "Olá Push!");
+        }
+    }
+}
